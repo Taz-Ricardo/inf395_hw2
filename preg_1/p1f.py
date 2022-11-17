@@ -114,114 +114,96 @@ def data_gen(X_train, y_train, X_val, y_val, X_test, y_test,rotation_range=0, wi
                     fill_mode='nearest',
                     data_format="channels_last")
     datagen_train.fit(X_train)
-    train_generaton = datagen_train.flow(X_train, y_train, batch_size=128)
+    train_generaton = datagen_train.flow(X_train, y_train, batch_size=64)
 
     datagen_val.fit(X_val)
-    val_generaton = datagen_val.flow(X_val, y_val, batch_size=64)
+    val_generaton = datagen_val.flow(X_val, y_val, batch_size=32)
 
     datagen_test.fit(X_test)
-    test_generaton = datagen_test.flow(X_test, y_test, batch_size=64)
+    test_generaton = datagen_test.flow(X_test, y_test, batch_size=32)
 
     return train_generaton, val_generaton, test_generaton
 
 
-class parameters_nn:
-    def __init__(self):
-        self.inputs = Input(shape=X_train.shape[1:])
-        self.num_classes = 4
-        self.filters = 128
-        self.kernel_size = (3,3)
-        self.strides=(1,1)
-        self.padding = 'same'
-        self.dilation_rate=(1,1)
-        self.activation = 'relu'
-        self.pooling_function = AveragePooling2D(strides=(5,5))
-        self.dense_layers = [32]
 
 
-def best_cnn(parameters_object):
-    x = parameters_object.inputs
-    # create model    
-    conv1  =Conv2D(filters  = parameters_object.filters,
-                    kernel_size = parameters_object.kernel_size,
-                    strides = parameters_object.strides,
-                    padding = parameters_object.padding,
-                    dilation_rate = parameters_object.dilation_rate,
-                    activation = parameters_object.activation,
-                    data_format = 'channels_last')(x)
 
-    pool1  = parameters_object.pooling_function(conv1)
 
-    conv2  =Conv2D(filters  = parameters_object.filters,
-                    kernel_size = parameters_object.kernel_size,
-                    strides = parameters_object.strides,
-                    padding = parameters_object.padding,
-                    dilation_rate = parameters_object.dilation_rate,
-                    activation = parameters_object.activation,
-                    data_format = 'channels_last')(pool1)
+def di_caprio_model(inputs, n_classes, n_blocks):
 
-    pool2  = parameters_object.pooling_function(conv2)    
+    x = inputs
+
+    ### 1st layer
+    for i in range(n_blocks):
+        layer_0 = Conv2D(64, (3, 3), activation='relu', padding='same')(x)
+
+        layer_1 = Conv2D(96, (1,1), padding='same', activation='relu')(x)
+        layer_1 = Conv2D(128, (3,3), padding='same', activation='relu')(layer_1)
+
+        layer_2 = Conv2D(10, (1,1), padding='same', activation='relu')(x)
+        layer_2 = Conv2D(10, (5,5), padding='same', activation='relu')(layer_2)
+
+        layer_3 = MaxPooling2D((3,3), strides=(1,1), padding='same')(x)
+        layer_3 = Conv2D(10, (1,1), padding='same', activation='relu')(layer_3)
+
+        concat = tf.keras.layers.concatenate([layer_0,layer_1, layer_2, layer_3], axis = 3)
+        x = AveragePooling2D((3,3), strides=(2,2), padding='same')(concat)
+
+    flat_1 = Flatten()(x)
+
+    dense_1 = Dense(512, activation='relu')(flat_1)
+    dense_2 = Dense(256, activation='relu')(dense_1)
+    output = Dense(n_classes, activation='softmax')(dense_2)
     
-    if len(parameters_object.dense_layers) == 1:
-        dense1 = Dense(units= parameters_object.dense_layers[0], activation='relu')(Flatten()(pool2))    
+    model = Model([inputs], output)
 
-        dense2 = Dense(units= parameters_object.num_classes, activation='softmax')(dense1)
+    model.compile(
+        optimizer='adam',
+        loss='categorical_crossentropy',
+        metrics=['accuracy']
+    )
 
-        model  = Model(inputs = parameters_object.inputs, outputs = dense2)  
-    else:
-        dense1 = Dense(units= parameters_object.dense_layers[0], activation='relu')(Flatten()(pool2))    
-        dense2 = Dense(units= parameters_object.dense_layers[1], activation='relu')(dense1)
-        dense3 = Dense(units= parameters_object.num_classes, activation='softmax')(dense2)
-
-        model  = Model(inputs = parameters_object.inputs, outputs = dense3)
-
-    
     return model
 
-# ...
+with tf.device("/CPU:0"):
+    for blocks in [1,3,4]:
+        print(f'hola, estoy funcionando en el bloque {blocks}')
 
-import itertools  
+        train_generaton, val_generaton, test_generaton = data_gen(X_train, y_train, X_val, y_val, X_test, y_test, rotation_range=20, vertical_flip=True)
 
-flips = [True, False]
-angles =  [20, 40]
+        inputs = Input(shape=(256, 256, 3))
 
-parameters_object = parameters_nn()
+        num_classes = 4
 
-for flips_, angles_ in itertools.product(flips, angles): 
+        model = di_caprio_model(inputs, num_classes, blocks)
+        epochs = 200
 
-    train_generaton, val_generaton, test_generaton = data_gen(X_train, y_train, X_val, y_val, X_test, y_test, rotation_range=angles_, vertical_flip=flips_)
-    inputs = Input(shape=(256, 256, 3))
-    num_classes = 4
+        my_callbacks = [History(), EarlyStopping(patience=8, min_delta=0.01, monitor='val_accuracy', mode="auto", restore_best_weights = True)]
+        
+        #compile model
+        model.compile(loss='categorical_crossentropy', optimizer='adam', metrics=['accuracy'], run_eagerly=True)
 
-    model = best_cnn(parameters_object)
-    epochs = 200
+        #fit model
 
-    my_callbacks = [History(), EarlyStopping(patience=20, min_delta=0.01, monitor='val_accuracy', mode="max", restore_best_weights = True)]
-    
-    #compile model
-    model.compile(loss='categorical_crossentropy', optimizer='adam', metrics=['accuracy'], run_eagerly=True)
+        history = model.fit(train_generaton, validation_data=val_generaton, epochs=epochs, callbacks=my_callbacks)
+        # save history of modedl
+        history_df = pd.DataFrame(history.history)
+        history_df.to_csv(f'history_inception_{blocks}_p1h.csv')
 
-    #fit model
+        #test model
+        test_loss, test_acc = model.evaluate(X_test, y_test)
+        print(f'Loss in test data: {test_loss}\nAccuracy in test data: {test_acc}')
+        # test model with augmented data
+        gen_test_loss, gen_test_acc = model.evaluate(test_generaton)
+        print(f'Loss in test data: {test_loss}\nAccuracy in test data: {test_acc}')
+        # save model
+        with open(f'test_results_inception_{blocks}_p1h.csv', 'w') as f:
+            f.write(f'Loss in test data: {test_loss}\nAccuracy in test data: {test_acc}')
+            f.write(f'Loss in gen test data: {gen_test_loss}\nAccuracy in gen test data: {test_acc}')
 
-    history = model.fit(train_generaton, validation_data=val_generaton, epochs=epochs, callbacks=my_callbacks)
-    # save history of modedl
-    history_df = pd.DataFrame(history.history)
-    history_df.to_csv(f'history_flips:{flips_}_angles:{angles_}_p1f.csv')
+        model.save(f'best_model_inceptios_{blocks}_p1h')
 
-    #test model
-    test_loss, test_acc = model.evaluate(X_test, y_test)
-    print(f'Loss in test data: {test_loss}\nAccuracy in test data: {test_acc}')
-    # test model with augmented data
-    gen_test_loss, gen_test_acc = model.evaluate(test_generaton)
-    print(f'Loss in test data: {test_loss}\nAccuracy in test data: {test_acc}')
-    # save model
-    with open(f'test_results_flips:{flips_}_angles:{angles_}_p1f.csv', 'w') as f:
-        f.write(f'Loss in test data: {test_loss}\nAccuracy in test data: {test_acc}')
-        f.write(f'Loss in gen test data: {gen_test_loss}\nAccuracy in gen test data: {test_acc}')
-
-    model.save(f'best_model_flips:{flips_}_angles:{angles_}_p1f')
-
-    tf.keras.backend.clear_session()
+        tf.keras.backend.clear_session()    
     
 
 
